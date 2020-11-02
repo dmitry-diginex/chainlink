@@ -29,28 +29,6 @@ import (
 
 var errUnauthorized = errors.New("401 Unauthorized")
 
-// ListETHKeys renders a table containing the active account address
-// with it's ETH & LINK balance
-func (cli *Client) ListETHKeys(c *clipkg.Context) (err error) {
-	resp, err := cli.HTTP.Get("/v2/user/balances")
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	var links jsonapi.Links
-	balances := []presenters.ETHKey{}
-	if err = cli.deserializeAPIResponse(resp, &balances, &links); err != nil {
-		return err
-	}
-	err = cli.errorOut(cli.Render(&balances))
-	return err
-}
-
 // CreateServiceAgreement creates a ServiceAgreement based on JSON input
 func (cli *Client) CreateServiceAgreement(c *clipkg.Context) (err error) {
 	if !c.Args().Present() {
@@ -549,6 +527,309 @@ func (cli *Client) IndexTxAttempts(c *clipkg.Context) error {
 	return cli.getPage("/v2/tx_attempts", c.Int("page"), &[]models.TxAttempt{})
 }
 
+func (cli *Client) printResponseBody(resp *http.Response) error {
+	b, err := parseResponse(resp)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+
+	fmt.Println(string(b))
+	return nil
+}
+
+func (cli *Client) renderAPIResponse(resp *http.Response, dst interface{}) error {
+	var links jsonapi.Links
+	if err := cli.deserializeAPIResponse(resp, dst, &links); err != nil {
+		return cli.errorOut(err)
+	}
+	return cli.errorOut(cli.Render(dst))
+}
+
+// SetMinimumGasPrice specifies the minimum gas price to use for outgoing transactions
+func (cli *Client) SetMinimumGasPrice(c *clipkg.Context) (err error) {
+	if c.NArg() != 1 {
+		return cli.errorOut(errors.New("expecting an amount"))
+	}
+
+	value := c.Args().Get(0)
+	amount, ok := new(big.Float).SetString(value)
+	if !ok {
+		return cli.errorOut(fmt.Errorf("invalid ethereum amount %s", value))
+	}
+
+	if c.IsSet("gwei") {
+		amount.Mul(amount, big.NewFloat(1000000000))
+	}
+
+	adjustedAmount, _ := amount.Int(nil)
+	request := struct {
+		EthGasPriceDefault string `json:"ethGasPriceDefault"`
+	}{EthGasPriceDefault: adjustedAmount.String()}
+	requestData, err := json.Marshal(request)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+
+	buf := bytes.NewBuffer(requestData)
+	response, err := cli.HTTP.Patch("/v2/config", buf)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := response.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	patchResponse := web.ConfigPatchResponse{}
+	if err = cli.deserializeAPIResponse(response, &patchResponse, &jsonapi.Links{}); err != nil {
+		return err
+	}
+
+	err = cli.errorOut(cli.Render(&patchResponse))
+	return err
+}
+
+// GetConfiguration gets the nodes environment variables
+func (cli *Client) GetConfiguration(c *clipkg.Context) (err error) {
+	resp, err := cli.HTTP.Get("/v2/config")
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+	cwl := presenters.ConfigPrinter{}
+	err = cli.renderAPIResponse(resp, &cwl)
+	return err
+}
+
+// CancelJob cancels a running job
+func (cli *Client) CancelJobRun(c *clipkg.Context) error {
+	if !c.Args().Present() {
+		return cli.errorOut(errors.New("Must pass the run id to be cancelled"))
+	}
+
+	response, err := cli.HTTP.Put(fmt.Sprintf("/v2/runs/%s/cancellation", c.Args().First()), nil)
+	if err != nil {
+		return cli.errorOut(errors.Wrap(err, "HTTP.Put"))
+	}
+	_, err = cli.parseResponse(response)
+	if err != nil {
+		return cli.errorOut(errors.Wrap(err, "cli.parseResponse"))
+	}
+	return nil
+}
+
+// CreateETHKey creates a new ethereum key with the same password
+// as the one used to unlock the existing key.
+func (cli *Client) CreateETHKey(c *clipkg.Context) (err error) {
+	resp, err := cli.HTTP.Post("/v2/keys/eth", nil)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	var keys []presenters.ETHKey
+	return cli.renderAPIResponse(resp, &keys)
+}
+
+// ListETHKeys renders a table containing the active account address
+// with it's ETH & LINK balance
+func (cli *Client) ListETHKeys(c *clipkg.Context) (err error) {
+	resp, err := cli.HTTP.Get("/v2/keys/eth")
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	var keys []presenters.ETHKey
+	return cli.renderAPIResponse(resp, &keys)
+}
+
+func (cli *Client) DeleteETHKey(c *clipkg.Context) (err error) {
+	if !c.Args().Present() {
+		return cli.errorOut(errors.New("Must pass the address of the key to be deleted"))
+	}
+
+	if !confirmAction(c) {
+		return nil
+	}
+
+	var queryStr string
+	if c.Bool("hard") {
+		queryStr = "?hard=true"
+	}
+
+	address := c.Args().Get(0)
+	resp, err := cli.HTTP.Delete(fmt.Sprintf("/v2/keys/eth/%s%s", address, queryStr))
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	if resp.StatusCode == 200 {
+		fmt.Printf("ETH key deleted.\n\n")
+	}
+	var key presenters.ETHKey
+	return cli.renderAPIResponse(resp, &key)
+}
+
+func (cli *Client) CreateP2PKey(c *clipkg.Context) (err error) {
+	resp, err := cli.HTTP.Post("/v2/keys/p2p", nil)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	if resp.StatusCode == 200 {
+		fmt.Printf("Created P2P keypair.\n\n")
+	}
+	var key p2pkey.EncryptedP2PKey
+	return cli.renderAPIResponse(resp, &key)
+}
+
+func (cli *Client) ListP2PKeys(c *clipkg.Context) (err error) {
+	resp, err := cli.HTTP.Get("/v2/keys/p2p", nil)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	var keys []p2pkey.EncryptedP2PKey
+	return cli.renderAPIResponse(resp, &keys)
+}
+
+func (cli *Client) DeleteP2PKey(c *clipkg.Context) (err error) {
+	if !c.Args().Present() {
+		return cli.errorOut(errors.New("Must pass the key ID to be deleted"))
+	}
+	id, err := strconv.ParseUint(c.Args().Get(0), 10, 32)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+
+	if !confirmAction(c) {
+		return nil
+	}
+
+	var queryStr string
+	if c.Bool("hard") {
+		queryStr = "?hard=true"
+	}
+
+	resp, err := cli.HTTP.Delete(fmt.Sprintf("/v2/keys/p2p/%d%s", id, queryStr))
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	if resp.StatusCode == 200 {
+		fmt.Printf("P2P key deleted.\n\n")
+	}
+	var key p2pkey.EncryptedP2PKey
+	return cli.renderAPIResponse(resp, &key)
+}
+
+// CreateOCRKeyBundle creates a key and inserts it into encrypted_ocr_key_bundles,
+// protected by the password in the password file
+func (cli *Client) CreateOCRKeyBundle(c *clipkg.Context) error {
+	resp, err := cli.HTTP.Post("/v2/keys/ocr", nil)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	if resp.StatusCode == 200 {
+		fmt.Printf("Created OCR key bundle.\n\n")
+	}
+	var key ocrkey.EncryptedKeyBundle
+	return cli.renderAPIResponse(resp, &key)
+}
+
+// ListOCRKeyBundles lists the available OCR Key Bundles
+func (cli *Client) ListOCRKeyBundles(c *clipkg.Context) error {
+	resp, err := cli.HTTP.Get("/v2/keys/ocr", nil)
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	var keys []ocrkey.EncryptedKeyBundle
+	return cli.renderAPIResponse(resp, &keys)
+}
+
+// DeleteOCRKeyBundle creates a key and inserts it into encrypted_ocr_keys,
+// protected by the password in the password file
+func (cli *Client) DeleteOCRKeyBundle(c *clipkg.Context) error {
+	if !c.Args().Present() {
+		return cli.errorOut(errors.New("Must pass the key ID to be deleted"))
+	}
+	id, err := models.Sha256HashFromHex(c.Args().Get(0))
+	if err != nil {
+		return cli.errorOut(err)
+	}
+
+	if !confirmAction(c) {
+		return nil
+	}
+
+	var queryStr string
+	if c.Bool("hard") {
+		queryStr = "?hard=true"
+	}
+
+	resp, err := cli.HTTP.Delete(fmt.Sprintf("/v2/keys/ocr/%s%s", id, queryStr))
+	if err != nil {
+		return cli.errorOut(err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			err = multierr.Append(err, cerr)
+		}
+	}()
+
+	if resp.StatusCode == 200 {
+		fmt.Printf("OCR key bundle deleted.\n\n")
+	}
+	var key ocrkey.EncryptedKeyBundle
+	return cli.renderAPIResponse(resp, &key)
+}
+
 func (cli *Client) buildSessionRequest(flag string) (models.SessionRequest, error) {
 	if len(flag) > 0 {
 		return cli.FileSessionRequestBuilder.Build(flag)
@@ -634,269 +915,4 @@ func parseResponse(resp *http.Response) ([]byte, error) {
 		return b, errors.New(resp.Status)
 	}
 	return b, err
-}
-
-func (cli *Client) printResponseBody(resp *http.Response) error {
-	b, err := parseResponse(resp)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-
-	fmt.Println(string(b))
-	return nil
-}
-
-func (cli *Client) renderAPIResponse(resp *http.Response, dst interface{}) error {
-	var links jsonapi.Links
-	if err := cli.deserializeAPIResponse(resp, dst, &links); err != nil {
-		return cli.errorOut(err)
-	}
-	return cli.errorOut(cli.Render(dst))
-}
-
-// CreateExtraKey creates a new ethereum key with the same password
-// as the one used to unlock the existing key.
-func (cli *Client) CreateExtraKey(c *clipkg.Context) (err error) {
-	password := cli.PasswordPrompter.Prompt()
-	request := models.CreateKeyRequest{
-		CurrentPassword: password,
-	}
-
-	requestData, err := json.Marshal(request)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-
-	buf := bytes.NewBuffer(requestData)
-	resp, err := cli.HTTP.Post("/v2/keys", buf)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	err = cli.printResponseBody(resp)
-	return err
-}
-
-// SetMinimumGasPrice specifies the minimum gas price to use for outgoing transactions
-func (cli *Client) SetMinimumGasPrice(c *clipkg.Context) (err error) {
-	if c.NArg() != 1 {
-		return cli.errorOut(errors.New("expecting an amount"))
-	}
-
-	value := c.Args().Get(0)
-	amount, ok := new(big.Float).SetString(value)
-	if !ok {
-		return cli.errorOut(fmt.Errorf("invalid ethereum amount %s", value))
-	}
-
-	if c.IsSet("gwei") {
-		amount.Mul(amount, big.NewFloat(1000000000))
-	}
-
-	adjustedAmount, _ := amount.Int(nil)
-	request := struct {
-		EthGasPriceDefault string `json:"ethGasPriceDefault"`
-	}{EthGasPriceDefault: adjustedAmount.String()}
-	requestData, err := json.Marshal(request)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-
-	buf := bytes.NewBuffer(requestData)
-	response, err := cli.HTTP.Patch("/v2/config", buf)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := response.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	patchResponse := web.ConfigPatchResponse{}
-	if err = cli.deserializeAPIResponse(response, &patchResponse, &jsonapi.Links{}); err != nil {
-		return err
-	}
-
-	err = cli.errorOut(cli.Render(&patchResponse))
-	return err
-}
-
-// GetConfiguration gets the nodes environment variables
-func (cli *Client) GetConfiguration(c *clipkg.Context) (err error) {
-	resp, err := cli.HTTP.Get("/v2/config")
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-	cwl := presenters.ConfigPrinter{}
-	err = cli.renderAPIResponse(resp, &cwl)
-	return err
-}
-
-// CancelJob cancels a running job
-func (cli *Client) CancelJobRun(c *clipkg.Context) error {
-	if !c.Args().Present() {
-		return cli.errorOut(errors.New("Must pass the run id to be cancelled"))
-	}
-
-	response, err := cli.HTTP.Put(fmt.Sprintf("/v2/runs/%s/cancellation", c.Args().First()), nil)
-	if err != nil {
-		return cli.errorOut(errors.Wrap(err, "HTTP.Put"))
-	}
-	_, err = cli.parseResponse(response)
-	if err != nil {
-		return cli.errorOut(errors.Wrap(err, "cli.parseResponse"))
-	}
-	return nil
-}
-
-func (cli *Client) CreateP2PKey(c *clipkg.Context) (err error) {
-	resp, err := cli.HTTP.Post("/v2/p2p_keys", nil)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	if resp.StatusCode == 200 {
-		fmt.Printf("Created P2P keypair.\n\n")
-	}
-	var key p2pkey.EncryptedP2PKey
-	return cli.renderAPIResponse(resp, &key)
-}
-
-func (cli *Client) ListP2PKeys(c *clipkg.Context) (err error) {
-	resp, err := cli.HTTP.Get("/v2/p2p_keys", nil)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	var keys []p2pkey.EncryptedP2PKey
-	return cli.renderAPIResponse(resp, &keys)
-}
-
-func (cli *Client) DeleteP2PKey(c *clipkg.Context) (err error) {
-	if !c.Args().Present() {
-		return cli.errorOut(errors.New("Must pass the key ID to be deleted"))
-	}
-	id, err := strconv.ParseUint(c.Args().Get(0), 10, 32)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-
-	if !confirmAction(c) {
-		return nil
-	}
-
-	var queryStr string
-	if c.Bool("hard") {
-		queryStr = "?hard=true"
-	}
-
-	resp, err := cli.HTTP.Delete(fmt.Sprintf("/v2/p2p_keys/%d%s", id, queryStr))
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	if resp.StatusCode == 200 {
-		fmt.Printf("P2P key deleted.\n\n")
-	}
-	var key p2pkey.EncryptedP2PKey
-	return cli.renderAPIResponse(resp, &key)
-}
-
-// CreateOCRKeyBundle creates a key and inserts it into encrypted_ocr_key_bundles,
-// protected by the password in the password file
-func (cli *Client) CreateOCRKeyBundle(c *clipkg.Context) error {
-	resp, err := cli.HTTP.Post("/v2/off_chain_reporting_keys", nil)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	if resp.StatusCode == 200 {
-		fmt.Printf("Created OCR key bundle.\n\n")
-	}
-	var key ocrkey.EncryptedKeyBundle
-	return cli.renderAPIResponse(resp, &key)
-}
-
-// ListOCRKeyBundles lists the available OCR Key Bundles
-func (cli *Client) ListOCRKeyBundles(c *clipkg.Context) error {
-	resp, err := cli.HTTP.Get("/v2/off_chain_reporting_keys", nil)
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	var keys []ocrkey.EncryptedKeyBundle
-	return cli.renderAPIResponse(resp, &keys)
-}
-
-// DeleteOCRKeyBundle creates a key and inserts it into encrypted_ocr_keys,
-// protected by the password in the password file
-func (cli *Client) DeleteOCRKeyBundle(c *clipkg.Context) error {
-	if !c.Args().Present() {
-		return cli.errorOut(errors.New("Must pass the key ID to be deleted"))
-	}
-	id, err := models.Sha256HashFromHex(c.Args().Get(0))
-	if err != nil {
-		return cli.errorOut(err)
-	}
-
-	if !confirmAction(c) {
-		return nil
-	}
-
-	var queryStr string
-	if c.Bool("hard") {
-		queryStr = "?hard=true"
-	}
-
-	resp, err := cli.HTTP.Delete(fmt.Sprintf("/v2/off_chain_reporting_keys/%s%s", id, queryStr))
-	if err != nil {
-		return cli.errorOut(err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			err = multierr.Append(err, cerr)
-		}
-	}()
-
-	if resp.StatusCode == 200 {
-		fmt.Printf("OCR key bundle deleted.\n\n")
-	}
-	var key ocrkey.EncryptedKeyBundle
-	return cli.renderAPIResponse(resp, &key)
 }
