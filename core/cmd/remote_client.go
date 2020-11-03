@@ -636,7 +636,9 @@ func (cli *Client) CreateETHKey(c *clipkg.Context) (err error) {
 		}
 	}()
 
-	var keys []presenters.ETHKey
+	fmt.Printf("ETH key created.\n\n")
+	fmt.Println("🔑 New key")
+	var keys presenters.ETHKey
 	return cli.renderAPIResponse(resp, &keys)
 }
 
@@ -653,6 +655,7 @@ func (cli *Client) ListETHKeys(c *clipkg.Context) (err error) {
 		}
 	}()
 
+	fmt.Println("🔑 ETH keys")
 	var keys []presenters.ETHKey
 	return cli.renderAPIResponse(resp, &keys)
 }
@@ -685,6 +688,7 @@ func (cli *Client) DeleteETHKey(c *clipkg.Context) (err error) {
 	if resp.StatusCode == 200 {
 		fmt.Printf("ETH key deleted.\n\n")
 	}
+	fmt.Println("🔑 Deleted ETH key")
 	var key presenters.ETHKey
 	return cli.renderAPIResponse(resp, &key)
 }

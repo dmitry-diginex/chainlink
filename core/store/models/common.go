@@ -607,11 +607,6 @@ type SendEtherRequest struct {
 	Amount             assets.Eth     `json:"amount"`
 }
 
-// CreateKeyRequest represents a request to add an ethereum key.
-type CreateKeyRequest struct {
-	CurrentPassword string `json:"current_password"`
-}
-
 // AddressCollection is an array of common.Address
 // serializable to and from a database.
 type AddressCollection []common.Address
