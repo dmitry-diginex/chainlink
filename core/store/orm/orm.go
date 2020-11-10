@@ -1284,7 +1284,7 @@ func (orm *ORM) DeleteKey(address common.Address) error {
 // If a key with this address exists, it does nothing
 func (orm *ORM) CreateKeyIfNotExists(k models.Key) error {
 	orm.MustEnsureAdvisoryLock()
-	err := orm.DB.Set("gorm:insert_option", "ON CONFLICT (address) DO NOTHING").Create(&k).Error
+	err := orm.DB.Set("gorm:insert_option", "ON CONFLICT (address) DO UPDATE SET deleted_at = NULL").Create(&k).Error
 	if err == nil || err.Error() == "sql: no rows in result set" {
 		return nil
 	}
